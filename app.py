@@ -89,3 +89,29 @@ def logs():
         result += f"{confirm_time}, token={token}\n"
 
     return f"<pre>{result}</pre>"
+    from flask import jsonify
+
+@app.route("/api/confirmed_tokens")
+def api_confirmed_tokens():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT token, confirm_time AT TIME ZONE 'Asia/Taipei'
+        FROM confirm_logs
+        ORDER BY confirm_time DESC
+    """)
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    data = []
+    for token, confirm_time in rows:
+        data.append({
+            "token": token,
+            "confirm_time": str(confirm_time)
+        })
+
+    return jsonify(data)
