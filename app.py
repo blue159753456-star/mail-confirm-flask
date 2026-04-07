@@ -47,7 +47,7 @@ def confirm():
         CREATE TABLE IF NOT EXISTS confirm_logs (
             id SERIAL PRIMARY KEY,
             token TEXT UNIQUE,
-            confirm_time TIMESTAMP
+            confirm_time TIMESTAMPTZ
         )
     """)
 
@@ -74,10 +74,10 @@ def logs():
     cur = conn.cursor()
 
     cur.execute("""
-    SELECT token, confirm_time AT TIME ZONE 'Asia/Taipei'
-    FROM confirm_logs
-    ORDER BY confirm_time DESC
-""")
+        SELECT token, confirm_time AT TIME ZONE 'Asia/Taipei'
+        FROM confirm_logs
+        ORDER BY confirm_time DESC
+    """)
 
     rows = cur.fetchall()
 
