@@ -1,5 +1,6 @@
 from flask import Flask, request
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import psycopg2
 import os
 
@@ -54,7 +55,7 @@ def confirm():
         INSERT INTO confirm_logs (token, confirm_time)
         VALUES (%s, %s)
         ON CONFLICT (token) DO NOTHING
-    """, (token, datetime.now()))
+    """, (token, datetime.now(ZoneInfo("Asia/Taipei")))
 
     conn.commit()
 
