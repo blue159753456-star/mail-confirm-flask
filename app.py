@@ -8,36 +8,30 @@ def confirm():
     conn = get_conn()
     cur = conn.cursor()
 
-    # 🔥 這段是你剛換的
-    cur.execute("DROP TABLE IF EXISTS confirm_logs")
-
+    # 建表（只建立一次）
     cur.execute("""
-        CREATE TABLE confirm_logs (
+        CREATE TABLE IF NOT EXISTS confirm_logs (
             id SERIAL PRIMARY KEY,
             token TEXT UNIQUE,
             confirm_time TIMESTAMP
         )
     """)
 
-    # 檢查是否已存在
+    # 插入（防重複）
     cur.execute("""
-        SELECT id FROM confirm_logs WHERE token = %s
-    """, (token,))
+        INSERT INTO confirm_logs (token, confirm_time)
+        VALUES (%s, %s)
+        ON CONFLICT (token) DO NOTHING
+    """, (token, datetime.now()))
 
-    exists = cur.fetchone()
+    conn.commit()
 
-    if exists:
+    # 判斷是否重複
+    if cur.rowcount == 0:
         cur.close()
         conn.close()
         return f"此連結已確認過（token={token}）"
 
-    # 寫入
-    cur.execute("""
-        INSERT INTO confirm_logs (token, confirm_time)
-        VALUES (%s, %s)
-    """, (token, datetime.now()))
-
-    conn.commit()
     cur.close()
     conn.close()
 
