@@ -1,3 +1,37 @@
+from flask import Flask, request
+from datetime import datetime
+import psycopg2
+import os
+
+app = Flask(__name__)
+
+def get_conn():
+    return psycopg2.connect(os.environ["DATABASE_URL"])
+
+@app.route("/")
+def home():
+    return "Render Flask + DB 成功"
+
+@app.route("/reset_db")
+def reset_db():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("DROP TABLE IF EXISTS confirm_logs")
+    cur.execute("""
+        CREATE TABLE confirm_logs (
+            id SERIAL PRIMARY KEY,
+            token TEXT UNIQUE,
+            confirm_time TIMESTAMP
+        )
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return "confirm_logs 已重建完成"
+
 @app.route("/confirm")
 def confirm():
     token = request.args.get("token", "").strip()
@@ -8,7 +42,6 @@ def confirm():
     conn = get_conn()
     cur = conn.cursor()
 
-    # 建表（只建立一次）
     cur.execute("""
         CREATE TABLE IF NOT EXISTS confirm_logs (
             id SERIAL PRIMARY KEY,
@@ -17,7 +50,6 @@ def confirm():
         )
     """)
 
-    # 插入（防重複）
     cur.execute("""
         INSERT INTO confirm_logs (token, confirm_time)
         VALUES (%s, %s)
@@ -26,7 +58,6 @@ def confirm():
 
     conn.commit()
 
-    # 判斷是否重複
     if cur.rowcount == 0:
         cur.close()
         conn.close()
@@ -34,5 +65,26 @@ def confirm():
 
     cur.close()
     conn.close()
-
     return f"確認成功 token={token}"
+
+@app.route("/logs")
+def logs():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT token, confirm_time
+        FROM confirm_logs
+        ORDER BY confirm_time DESC
+    """)
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    result = ""
+    for token, confirm_time in rows:
+        result += f"{confirm_time}, token={token}\n"
+
+    return f"<pre>{result}</pre>"
