@@ -8,9 +8,11 @@ def confirm():
     conn = get_conn()
     cur = conn.cursor()
 
-    # 建表（加唯一限制）
+    # 🔥 這段是你剛換的
+    cur.execute("DROP TABLE IF EXISTS confirm_logs")
+
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS confirm_logs (
+        CREATE TABLE confirm_logs (
             id SERIAL PRIMARY KEY,
             token TEXT UNIQUE,
             confirm_time TIMESTAMP
