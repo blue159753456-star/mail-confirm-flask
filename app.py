@@ -23,7 +23,7 @@ def reset_db():
         CREATE TABLE confirm_logs (
             id SERIAL PRIMARY KEY,
             token TEXT UNIQUE,
-            confirm_time TIMESTAMP
+            confirm_time TIMESTAMPTZ
         )
     """)
 
