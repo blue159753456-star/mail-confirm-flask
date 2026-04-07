@@ -1,17 +1,3 @@
-from flask import Flask, request
-from datetime import datetime
-import psycopg2
-import os
-
-app = Flask(__name__)
-
-def get_conn():
-    return psycopg2.connect(os.environ["DATABASE_URL"])
-
-@app.route("/")
-def home():
-    return "Render Flask + DB 成功"
-
 @app.route("/confirm")
 def confirm():
     token = request.args.get("token", "").strip()
@@ -22,16 +8,28 @@ def confirm():
     conn = get_conn()
     cur = conn.cursor()
 
-    # 建表（第一次會自動建立）
+    # 建表（加唯一限制）
     cur.execute("""
         CREATE TABLE IF NOT EXISTS confirm_logs (
             id SERIAL PRIMARY KEY,
-            token TEXT,
+            token TEXT UNIQUE,
             confirm_time TIMESTAMP
         )
     """)
 
-    # 寫入資料
+    # 檢查是否已存在
+    cur.execute("""
+        SELECT id FROM confirm_logs WHERE token = %s
+    """, (token,))
+
+    exists = cur.fetchone()
+
+    if exists:
+        cur.close()
+        conn.close()
+        return f"此連結已確認過（token={token}）"
+
+    # 寫入
     cur.execute("""
         INSERT INTO confirm_logs (token, confirm_time)
         VALUES (%s, %s)
@@ -42,25 +40,3 @@ def confirm():
     conn.close()
 
     return f"確認成功 token={token}"
-
-@app.route("/logs")
-def logs():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT token, confirm_time
-        FROM confirm_logs
-        ORDER BY confirm_time DESC
-    """)
-
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    result = ""
-    for r in rows:
-        result += f"{r[1]}, token={r[0]}\n"
-
-    return f"<pre>{result}</pre>"
