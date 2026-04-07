@@ -55,7 +55,7 @@ def confirm():
         INSERT INTO confirm_logs (token, confirm_time)
         VALUES (%s, %s)
         ON CONFLICT (token) DO NOTHING
-    """, (token, datetime.now(ZoneInfo("Asia/Taipei"))))
+    """, (token, datetime.utcnow()))
 
     conn.commit()
 
