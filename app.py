@@ -117,7 +117,7 @@ def api_confirmed_tokens():
     for token, confirm_time, processed in rows:
         data.append({
             "token": token,
-            "confirm_time": str(confirm_time),
+            "confirm_time": confirm_time.strftime("%Y-%m-%d %H:%M:%S"),
             "processed": processed
         })
 
@@ -155,7 +155,7 @@ def api_new_tokens():
     for _, token, confirm_time in rows:
         data.append({
             "token": token,
-            "confirm_time": str(confirm_time)
+            "confirm_time": confirm_time.strftime("%Y-%m-%d %H:%M:%S")
         })
 
     return jsonify(data)
