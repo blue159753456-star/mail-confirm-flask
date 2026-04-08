@@ -268,3 +268,62 @@ def api_create_token():
             cur.close()
         if conn:
             conn.close()
+
+@app.route("/api/upload_tokens", methods=["POST"])
+def api_upload_tokens():
+    conn = None
+    cur = None
+    try:
+        data = request.get_json(silent=True) or {}
+        tokens = data.get("tokens", [])
+
+        if not isinstance(tokens, list) or not tokens:
+            return jsonify({"ok": False, "error": "缺少 tokens"}), 400
+
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS confirm_tokens (
+                token TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                created_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                confirm_time TIMESTAMPTZ,
+                processed BOOLEAN NOT NULL DEFAULT FALSE
+            )
+        """)
+
+        inserted = 0
+
+        for token in tokens:
+            token = str(token).strip()
+            if not token:
+                continue
+
+            cur.execute("""
+                INSERT INTO confirm_tokens (token, status, processed)
+                VALUES (%s, 'PENDING', FALSE)
+                ON CONFLICT (token) DO NOTHING
+            """, (token,))
+
+            if cur.rowcount > 0:
+                inserted += 1
+
+        conn.commit()
+
+        return jsonify({
+            "ok": True,
+            "received": len(tokens),
+            "inserted": inserted
+        })
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
