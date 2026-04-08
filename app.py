@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import psycopg2
 import os
+import uuid
 
 app = Flask(__name__)
 
@@ -22,7 +23,80 @@ def home():
     return "MAIL CONFIRM SYSTEM OK"
 
 
-# ✅ 確認連結
+# 初始化資料表（只建一次後可不用再打）
+@app.route("/init_db")
+def init_db():
+    conn = None
+    cur = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS confirm_tokens (
+                token TEXT PRIMARY KEY,
+                email TEXT,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                created_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                confirm_time TIMESTAMPTZ,
+                processed BOOLEAN NOT NULL DEFAULT FALSE
+            )
+        """)
+
+        conn.commit()
+        return "confirm_tokens 建立完成"
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return f"init_db 發生錯誤：{e}", 500
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
+
+# 測試用：手動新增一筆 token
+# 正式環境之後可拿掉
+@app.route("/create_test_token")
+def create_test_token():
+    email = request.args.get("email", "").strip()
+    token = uuid.uuid4().hex
+
+    conn = None
+    cur = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO confirm_tokens (token, email, status)
+            VALUES (%s, %s, 'PENDING')
+        """, (token, email or None))
+
+        conn.commit()
+
+        return jsonify({
+            "ok": True,
+            "token": token,
+            "email": email
+        })
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
+
+# 客戶點確認連結
 @app.route("/confirm")
 def confirm():
     token = request.args.get("token", "").strip()
@@ -37,15 +111,29 @@ def confirm():
         cur = conn.cursor()
 
         cur.execute("""
-            INSERT INTO confirm_logs (token, confirm_time)
-            VALUES (%s, NOW())
-            ON CONFLICT (token) DO NOTHING
+            SELECT status
+            FROM confirm_tokens
+            WHERE token = %s
         """, (token,))
-        conn.commit()
 
-        if cur.rowcount == 0:
+        row = cur.fetchone()
+
+        if not row:
+            return "此連結無效或不存在", 400
+
+        status = row[0]
+
+        if status == "CONFIRMED":
             return "此連結已確認過"
 
+        cur.execute("""
+            UPDATE confirm_tokens
+            SET status = 'CONFIRMED',
+                confirm_time = NOW()
+            WHERE token = %s
+        """, (token,))
+
+        conn.commit()
         return "您已完成電子郵件確認"
 
     except Exception as e:
@@ -60,7 +148,7 @@ def confirm():
             conn.close()
 
 
-# ✅ 查詢「尚未處理」資料（只讀）
+# 查詢尚未處理的已確認資料
 @app.route("/api/new_tokens")
 def api_new_tokens():
     conn = None
@@ -70,18 +158,22 @@ def api_new_tokens():
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT token, confirm_time AT TIME ZONE 'Asia/Taipei'
-            FROM confirm_logs
-            WHERE processed = FALSE
+            SELECT token,
+                   email,
+                   confirm_time AT TIME ZONE 'Asia/Taipei'
+            FROM confirm_tokens
+            WHERE status = 'CONFIRMED'
+              AND processed = FALSE
             ORDER BY confirm_time
         """)
 
         rows = cur.fetchall()
 
         data = []
-        for token, confirm_time in rows:
+        for token, email, confirm_time in rows:
             data.append({
                 "token": token,
+                "email": email or "",
                 "confirm_time": format_dt(confirm_time)
             })
 
@@ -97,7 +189,7 @@ def api_new_tokens():
             conn.close()
 
 
-# ✅ 標記已處理
+# 本機處理完成後，回寫已處理
 @app.route("/api/mark_processed", methods=["POST"])
 def api_mark_processed():
     conn = None
@@ -113,7 +205,7 @@ def api_mark_processed():
         cur = conn.cursor()
 
         cur.execute("""
-            UPDATE confirm_logs
+            UPDATE confirm_tokens
             SET processed = TRUE
             WHERE token = ANY(%s)
         """, (tokens,))
