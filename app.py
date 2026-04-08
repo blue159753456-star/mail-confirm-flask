@@ -66,12 +66,12 @@ def confirm():
     if cur.rowcount == 0:
         cur.close()
         conn.close()
-        return f"此連結已確認過（token={token}）"
+        return "此連結已確認過"
 
     cur.close()
     conn.close()
 
-    return f"確認成功 token={token}"
+    return "您已完成確認"
 
 
 @app.route("/logs")
