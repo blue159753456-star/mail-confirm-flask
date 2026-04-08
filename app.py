@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 import psycopg2
 import os
-import uuid
 
 app = Flask(__name__)
 
@@ -23,7 +22,6 @@ def home():
     return "MAIL CONFIRM SYSTEM OK"
 
 
-# 初始化資料表（只建一次後可不用再打）
 @app.route("/init_db")
 def init_db():
     conn = None
@@ -35,7 +33,6 @@ def init_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS confirm_tokens (
                 token TEXT PRIMARY KEY,
-                email TEXT,
                 status TEXT NOT NULL DEFAULT 'PENDING',
                 created_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 confirm_time TIMESTAMPTZ,
@@ -58,30 +55,59 @@ def init_db():
             conn.close()
 
 
-# 測試用：手動新增一筆 token
-# 正式環境之後可拿掉
-@app.route("/create_test_token")
-def create_test_token():
-    email = request.args.get("email", "").strip()
-    token = uuid.uuid4().hex
-
+@app.route("/api/upload_tokens", methods=["POST"])
+def api_upload_tokens():
     conn = None
     cur = None
     try:
+        data = request.get_json(silent=True) or {}
+        tokens = data.get("tokens", [])
+
+        if not isinstance(tokens, list) or not tokens:
+            return jsonify({"ok": False, "error": "缺少 tokens"}), 400
+
         conn = get_conn()
         cur = conn.cursor()
 
+        # 保險起見，若尚未建表則自動建表
         cur.execute("""
-            INSERT INTO confirm_tokens (token, email, status)
-            VALUES (%s, %s, 'PENDING')
-        """, (token, email or None))
+            CREATE TABLE IF NOT EXISTS confirm_tokens (
+                token TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                created_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                confirm_time TIMESTAMPTZ,
+                processed BOOLEAN NOT NULL DEFAULT FALSE
+            )
+        """)
+
+        inserted = 0
+        skipped = 0
+
+        for token in tokens:
+            token = str(token).strip()
+
+            if not token:
+                skipped += 1
+                continue
+
+            cur.execute("""
+                INSERT INTO confirm_tokens (token, status, processed)
+                VALUES (%s, 'PENDING', FALSE)
+                ON CONFLICT (token) DO NOTHING
+            """, (token,))
+
+            if cur.rowcount > 0:
+                inserted += 1
+            else:
+                skipped += 1
 
         conn.commit()
 
         return jsonify({
             "ok": True,
-            "token": token,
-            "email": email
+            "received": len(tokens),
+            "inserted": inserted,
+            "skipped": skipped
         })
 
     except Exception as e:
@@ -96,13 +122,12 @@ def create_test_token():
             conn.close()
 
 
-# 客戶點確認連結
 @app.route("/confirm")
 def confirm():
     token = request.args.get("token", "").strip()
 
-    if not token or len(token) > 200:
-        return "此連結無效", 400
+    if not token:
+        return "缺少 token", 400
 
     conn = None
     cur = None
@@ -115,7 +140,6 @@ def confirm():
             FROM confirm_tokens
             WHERE token = %s
         """, (token,))
-
         row = cur.fetchone()
 
         if not row:
@@ -134,7 +158,7 @@ def confirm():
         """, (token,))
 
         conn.commit()
-        return "您已完成電子郵件確認"
+        return "您已完成確認"
 
     except Exception as e:
         if conn:
@@ -148,7 +172,6 @@ def confirm():
             conn.close()
 
 
-# 查詢尚未處理的已確認資料
 @app.route("/api/new_tokens")
 def api_new_tokens():
     conn = None
@@ -158,9 +181,7 @@ def api_new_tokens():
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT token,
-                   email,
-                   confirm_time AT TIME ZONE 'Asia/Taipei'
+            SELECT token, confirm_time AT TIME ZONE 'Asia/Taipei'
             FROM confirm_tokens
             WHERE status = 'CONFIRMED'
               AND processed = FALSE
@@ -170,10 +191,9 @@ def api_new_tokens():
         rows = cur.fetchall()
 
         data = []
-        for token, email, confirm_time in rows:
+        for token, confirm_time in rows:
             data.append({
                 "token": token,
-                "email": email or "",
                 "confirm_time": format_dt(confirm_time)
             })
 
@@ -189,7 +209,6 @@ def api_new_tokens():
             conn.close()
 
 
-# 本機處理完成後，回寫已處理
 @app.route("/api/mark_processed", methods=["POST"])
 def api_mark_processed():
     conn = None
@@ -198,7 +217,7 @@ def api_mark_processed():
         data = request.get_json(silent=True) or {}
         tokens = data.get("tokens", [])
 
-        if not tokens:
+        if not isinstance(tokens, list) or not tokens:
             return jsonify({"ok": False, "error": "缺少 tokens"}), 400
 
         conn = get_conn()
@@ -213,108 +232,9 @@ def api_mark_processed():
         updated = cur.rowcount
         conn.commit()
 
-        return jsonify({"ok": True, "updated": updated})
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
-
-@app.route("/api/create_token", methods=["POST"])
-def api_create_token():
-    conn = None
-    cur = None
-    try:
-        data = request.get_json(silent=True) or {}
-        email = str(data.get("email", "")).strip()
-
-        if not email:
-            return jsonify({"ok": False, "error": "缺少 email"}), 400
-
-        import uuid
-        token = uuid.uuid4().hex
-        confirm_url = f"https://mail-confirm-flask.onrender.com/confirm?token={token}"
-
-        conn = get_conn()
-        cur = conn.cursor()
-
-        cur.execute("""
-            INSERT INTO confirm_tokens (token, email, status)
-            VALUES (%s, %s, 'PENDING')
-        """, (token, email))
-
-        conn.commit()
-
         return jsonify({
             "ok": True,
-            "email": email,
-            "token": token,
-            "confirm_url": confirm_url
-        })
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
-
-@app.route("/api/upload_tokens", methods=["POST"])
-def api_upload_tokens():
-    conn = None
-    cur = None
-    try:
-        data = request.get_json(silent=True) or {}
-        tokens = data.get("tokens", [])
-
-        if not isinstance(tokens, list) or not tokens:
-            return jsonify({"ok": False, "error": "缺少 tokens"}), 400
-
-        conn = get_conn()
-        cur = conn.cursor()
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS confirm_tokens (
-                token TEXT PRIMARY KEY,
-                status TEXT NOT NULL DEFAULT 'PENDING',
-                created_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                confirm_time TIMESTAMPTZ,
-                processed BOOLEAN NOT NULL DEFAULT FALSE
-            )
-        """)
-
-        inserted = 0
-
-        for token in tokens:
-            token = str(token).strip()
-            if not token:
-                continue
-
-            cur.execute("""
-                INSERT INTO confirm_tokens (token, status, processed)
-                VALUES (%s, 'PENDING', FALSE)
-                ON CONFLICT (token) DO NOTHING
-            """, (token,))
-
-            if cur.rowcount > 0:
-                inserted += 1
-
-        conn.commit()
-
-        return jsonify({
-            "ok": True,
-            "received": len(tokens),
-            "inserted": inserted
+            "updated": updated
         })
 
     except Exception as e:
