@@ -57,9 +57,9 @@ def confirm():
 
     cur.execute("""
         INSERT INTO confirm_logs (token, confirm_time)
-        VALUES (%s, %s)
+        VALUES (%s, NOW())
         ON CONFLICT (token) DO NOTHING
-    """, (token, datetime.utcnow()))
+    """, (token,))
 
     conn.commit()
 
