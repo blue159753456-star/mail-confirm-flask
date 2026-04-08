@@ -225,3 +225,46 @@ def api_mark_processed():
             cur.close()
         if conn:
             conn.close()
+
+@app.route("/api/create_token", methods=["POST"])
+def api_create_token():
+    conn = None
+    cur = None
+    try:
+        data = request.get_json(silent=True) or {}
+        email = str(data.get("email", "")).strip()
+
+        if not email:
+            return jsonify({"ok": False, "error": "缺少 email"}), 400
+
+        import uuid
+        token = uuid.uuid4().hex
+        confirm_url = f"https://mail-confirm-flask.onrender.com/confirm?token={token}"
+
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO confirm_tokens (token, email, status)
+            VALUES (%s, %s, 'PENDING')
+        """, (token, email))
+
+        conn.commit()
+
+        return jsonify({
+            "ok": True,
+            "email": email,
+            "token": token,
+            "confirm_url": confirm_url
+        })
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
