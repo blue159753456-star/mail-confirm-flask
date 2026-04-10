@@ -1,15 +1,18 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string, url_for
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
 
+# =========================
+# DB
+# =========================
 def get_conn():
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
-        raise RuntimeError("找不到 DATABASE_URL 環境變數")
+        raise RuntimeError("找不到 DATABASE_URL")
     return psycopg2.connect(database_url)
 
 
@@ -32,12 +35,6 @@ def init_db():
         """)
 
         conn.commit()
-        print("資料表 confirm_tokens 初始化完成")
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        print(f"init_db 發生錯誤：{e}")
 
     finally:
         if cur:
@@ -46,9 +43,175 @@ def init_db():
             conn.close()
 
 
+# =========================
+# UI（網銀等級）
+# =========================
+PAGE_TEMPLATE = """
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+
+<style>
+body {
+    margin: 0;
+    background: #f4f6f9;
+    font-family: "Microsoft JhengHei", Arial;
+}
+
+/* 🔴 上方銀行紅條 */
+.header-bar {
+    background: #c40018;
+    color: white;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.header-inner {
+    width: 100%;
+    max-width: 900px;
+    display: flex;
+    align-items: center;
+}
+
+/* LOGO */
+.logo {
+    height: 40px;
+    margin-right: 12px;
+}
+
+/* 標題 */
+.bank-title {
+    font-size: 18px;
+    font-weight: bold;
+}
+
+/* 主體 */
+.wrap {
+    display: flex;
+    justify-content: center;
+    padding: 40px 16px;
+}
+
+.card {
+    width: 100%;
+    max-width: 480px;
+    background: white;
+    border-radius: 14px;
+    padding: 36px 28px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.08);
+    text-align: center;
+}
+
+/* icon */
+.icon {
+    font-size: 70px;
+    margin-bottom: 16px;
+}
+
+.success { color: #22c55e; }
+.error { color: #ef4444; }
+.info { color: #3b82f6; }
+
+/* 標題 */
+.title {
+    font-size: 22px;
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+
+/* 內容 */
+.message {
+    font-size: 16px;
+    color: #333;
+    margin-bottom: 10px;
+}
+
+.note {
+    font-size: 14px;
+    color: #666;
+    margin-top: 10px;
+}
+
+/* 分隔 */
+.divider {
+    margin: 24px 0;
+    height: 1px;
+    background: #eee;
+}
+
+/* footer */
+.footer {
+    font-size: 13px;
+    color: #999;
+}
+</style>
+</head>
+
+<body>
+
+<!-- 🔴 銀行標頭 -->
+<div class="header-bar">
+    <div class="header-inner">
+
+        <!-- 有上傳 logo 才會顯示 -->
+        <img src="{{ url_for('static', filename='logo.png') }}" class="logo"
+             onerror="this.style.display='none'">
+
+        <div class="bank-title">
+            花蓮信用合作社
+        </div>
+    </div>
+</div>
+
+<div class="wrap">
+    <div class="card">
+
+        <div class="icon {{ theme }}">
+            {% if theme == 'success' %}✔{% elif theme == 'error' %}✖{% else %}ℹ{% endif %}
+        </div>
+
+        <div class="title">{{ title }}</div>
+        <div class="message">{{ message }}</div>
+
+        {% if note %}
+        <div class="note">{{ note }}</div>
+        {% endif %}
+
+        <div class="divider"></div>
+
+        <div class="footer">
+            The First Credit Cooperative Of Hualien
+        </div>
+
+    </div>
+</div>
+
+</body>
+</html>
+"""
+
+
+def render_page(title, message, theme="info", note="", code=200):
+    return render_template_string(
+        PAGE_TEMPLATE,
+        title=title,
+        message=message,
+        theme=theme,
+        note=note
+    ), code
+
+
+# =========================
+# Routes
+# =========================
 @app.route("/")
 def index():
-    return "mail confirm service is running"
+    return render_page("系統正常", "Mail 驗證服務運作中", "info")
 
 
 @app.route("/confirm")
@@ -56,10 +219,17 @@ def confirm():
     token = request.args.get("token", "").strip()
 
     if not token:
-        return "缺少 token", 400
+        return render_page(
+            "驗證失敗",
+            "缺少驗證參數",
+            "error",
+            "請確認您是否使用完整連結",
+            400
+        )
 
     conn = None
     cur = None
+
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -71,23 +241,38 @@ def confirm():
         """, (token,))
         row = cur.fetchone()
 
-        # 舊 token 若已被新一批覆蓋，這裡會查不到
         if not row:
-            return "此連結已失效或已被更新", 400
+            return render_page(
+                "連結已失效",
+                "此連結已失效或已更新",
+                "error",
+                "請使用最新驗證信件",
+                400
+            )
 
         status, created_time = row
 
         if status == "CONFIRMED":
-            return "此連結已確認過"
+            return render_page(
+                "已完成確認",
+                "此連結已使用過",
+                "info",
+                "無需重複操作"
+            )
 
-        # 超過 24 小時視為過期
         cur.execute("""
             SELECT NOW() > (%s + INTERVAL '24 hours')
         """, (created_time,))
         expired = cur.fetchone()[0]
 
         if expired:
-            return "此連結已過期，請重新申請", 400
+            return render_page(
+                "連結已過期",
+                "此驗證連結已過期",
+                "error",
+                "請重新申請驗證",
+                400
+            )
 
         cur.execute("""
             UPDATE confirm_tokens
@@ -97,12 +282,25 @@ def confirm():
         """, (token,))
 
         conn.commit()
-        return "您已完成確認"
+
+        return render_page(
+            "驗證成功",
+            "您已完成電子郵件確認",
+            "success",
+            "系統已記錄您的驗證結果"
+        )
 
     except Exception as e:
         if conn:
             conn.rollback()
-        return f"系統錯誤：{e}", 500
+
+        return render_page(
+            "系統錯誤",
+            "處理過程發生錯誤",
+            "error",
+            str(e),
+            500
+        )
 
     finally:
         if cur:
@@ -111,183 +309,86 @@ def confirm():
             conn.close()
 
 
+# =========================
+# API
+# =========================
 @app.route("/api/upload_tokens", methods=["POST"])
 def upload_tokens():
-    """
-    接收格式：
-    {
-        "tokens": ["token1", "token2", ...]
-    }
-
-    邏輯：
-    1. 清掉舊 token
-    2. 插入最新一批 token
-    """
-    data = request.get_json(silent=True) or {}
+    data = request.json or {}
     tokens = data.get("tokens", [])
 
-    if not isinstance(tokens, list) or not tokens:
-        return jsonify({"error": "tokens 格式錯誤或為空"}), 400
+    if not tokens:
+        return jsonify({"error": "no tokens"}), 400
 
-    # 清理空白與重複
-    clean_tokens = []
-    seen = set()
-    for t in tokens:
-        token = str(t).strip()
-        if token and token not in seen:
-            clean_tokens.append(token)
-            seen.add(token)
+    conn = get_conn()
+    cur = conn.cursor()
 
-    if not clean_tokens:
-        return jsonify({"error": "沒有有效 token"}), 400
-
-    conn = None
-    cur = None
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-
-        # 關鍵：清掉舊 token，避免客戶點舊連結仍成功
         cur.execute("DELETE FROM confirm_tokens")
 
-        for token in clean_tokens:
+        for t in tokens:
             cur.execute("""
-                INSERT INTO confirm_tokens (token, status, created_time, processed)
-                VALUES (%s, 'PENDING', NOW(), FALSE)
-            """, (token,))
+                INSERT INTO confirm_tokens (token, status, created_time)
+                VALUES (%s, 'PENDING', NOW())
+            """, (t,))
 
         conn.commit()
 
-        return jsonify({
-            "message": "tokens uploaded successfully",
-            "count": len(clean_tokens)
-        })
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"message": "ok", "count": len(tokens)})
 
     finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+        cur.close()
+        conn.close()
 
 
-@app.route("/api/new_tokens", methods=["GET"])
+@app.route("/api/new_tokens")
 def new_tokens():
-    """
-    回傳已確認但尚未 processed 的 token
-    """
-    conn = None
-    cur = None
-    try:
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        cur.execute("""
-            SELECT token, confirm_time
-            FROM confirm_tokens
-            WHERE status = 'CONFIRMED'
-              AND processed = FALSE
-            ORDER BY confirm_time ASC
-        """)
-        rows = cur.fetchall()
+    cur.execute("""
+        SELECT token, confirm_time
+        FROM confirm_tokens
+        WHERE status='CONFIRMED'
+          AND processed = FALSE
+        ORDER BY confirm_time
+    """)
 
-        return jsonify(rows)
+    rows = cur.fetchall()
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    cur.close()
+    conn.close()
 
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+    return jsonify(rows)
 
 
 @app.route("/api/mark_processed", methods=["POST"])
 def mark_processed():
-    """
-    接收格式：
-    {
-        "tokens": ["token1", "token2", ...]
-    }
-    """
-    data = request.get_json(silent=True) or {}
+    data = request.json or {}
     tokens = data.get("tokens", [])
 
-    if not isinstance(tokens, list) or not tokens:
-        return jsonify({"error": "tokens 格式錯誤或為空"}), 400
+    if not tokens:
+        return jsonify({"error": "no tokens"}), 400
 
-    clean_tokens = [str(t).strip() for t in tokens if str(t).strip()]
-    if not clean_tokens:
-        return jsonify({"error": "沒有有效 token"}), 400
+    conn = get_conn()
+    cur = conn.cursor()
 
-    conn = None
-    cur = None
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
+    cur.execute("""
+        UPDATE confirm_tokens
+        SET processed = TRUE
+        WHERE token = ANY(%s)
+    """, (tokens,))
 
-        cur.execute("""
-            UPDATE confirm_tokens
-            SET processed = TRUE
-            WHERE token = ANY(%s)
-        """, (clean_tokens,))
+    conn.commit()
 
-        updated_count = cur.rowcount
-        conn.commit()
+    cur.close()
+    conn.close()
 
-        return jsonify({
-            "message": "processed updated",
-            "count": updated_count
-        })
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return jsonify({"error": str(e)}), 500
-
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+    return jsonify({"updated": len(tokens)})
 
 
-@app.route("/api/reset_db", methods=["POST"])
-def reset_db():
-    """
-    測試用：清空 confirm_tokens
-    正式環境若不需要可刪除
-    """
-    conn = None
-    cur = None
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-
-        cur.execute("TRUNCATE TABLE confirm_tokens RESTART IDENTITY")
-        conn.commit()
-
-        return jsonify({"message": "confirm_tokens 已清空"})
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return jsonify({"error": str(e)}), 500
-
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
-
-
-# 啟動時初始化資料表
+# =========================
 init_db()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run()
