@@ -1,217 +1,102 @@
-import os
-from flask import Flask, request, jsonify, render_template_string, url_for
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from flask import request, render_template_string
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-app = Flask(__name__)
-
-
-# =========================
-# DB
-# =========================
-def get_conn():
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("找不到 DATABASE_URL")
-    return psycopg2.connect(database_url)
+TW_TZ = ZoneInfo("Asia/Taipei")
 
 
-def init_db():
-    conn = None
-    cur = None
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS confirm_tokens (
-                id SERIAL PRIMARY KEY,
-                token TEXT UNIQUE NOT NULL,
-                status TEXT NOT NULL DEFAULT 'PENDING',
-                created_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                confirm_time TIMESTAMPTZ,
-                processed BOOLEAN NOT NULL DEFAULT FALSE
-            )
-        """)
-
-        conn.commit()
-
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
-
-
-# =========================
-# UI（網銀等級）
-# =========================
-PAGE_TEMPLATE = """
+CONFIRM_PAGE_HTML = """
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ title }}</title>
-
-<style>
-body {
-    margin: 0;
-    background: #f4f6f9;
-    font-family: "Microsoft JhengHei", Arial;
-}
-
-/* 🔴 上方銀行紅條 */
-.header-bar {
-    background: #c40018;
-    color: white;
-    padding: 14px 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.header-inner {
-    width: 100%;
-    max-width: 900px;
-    display: flex;
-    align-items: center;
-}
-
-/* LOGO */
-.logo {
-    height: 40px;
-    margin-right: 12px;
-}
-
-/* 標題 */
-.bank-title {
-    font-size: 18px;
-    font-weight: bold;
-}
-
-/* 主體 */
-.wrap {
-    display: flex;
-    justify-content: center;
-    padding: 40px 16px;
-}
-
-.card {
-    width: 100%;
-    max-width: 480px;
-    background: white;
-    border-radius: 14px;
-    padding: 36px 28px;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.08);
-    text-align: center;
-}
-
-/* icon */
-.icon {
-    font-size: 70px;
-    margin-bottom: 16px;
-}
-
-.success { color: #22c55e; }
-.error { color: #ef4444; }
-.info { color: #3b82f6; }
-
-/* 標題 */
-.title {
-    font-size: 22px;
-    font-weight: bold;
-    margin-bottom: 10px;
-}
-
-/* 內容 */
-.message {
-    font-size: 16px;
-    color: #333;
-    margin-bottom: 10px;
-}
-
-.note {
-    font-size: 14px;
-    color: #666;
-    margin-top: 10px;
-}
-
-/* 分隔 */
-.divider {
-    margin: 24px 0;
-    height: 1px;
-    background: #eee;
-}
-
-/* footer */
-.footer {
-    font-size: 13px;
-    color: #999;
-}
-</style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Microsoft JhengHei", Arial, sans-serif;
+            background: #f3f4f6;
+            color: #222;
+        }
+        .topbar {
+            background: #d70022;
+            color: #fff;
+            padding: 22px 0;
+            font-size: 22px;
+            font-weight: 700;
+            text-align: center;
+            letter-spacing: 1px;
+        }
+        .wrap {
+            min-height: calc(100vh - 72px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 30px 15px;
+        }
+        .card {
+            width: 100%;
+            max-width: 670px;
+            background: #fff;
+            border-radius: 18px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.08);
+            padding: 48px 36px;
+            text-align: center;
+        }
+        .icon {
+            font-size: 72px;
+            line-height: 1;
+            margin-bottom: 20px;
+        }
+        .icon.success { color: #1f9d55; }
+        .icon.error { color: #ef4444; }
+        .icon.info { color: #2563eb; }
+        h1 {
+            margin: 0 0 18px 0;
+            font-size: 24px;
+            color: #111827;
+        }
+        .msg {
+            font-size: 16px;
+            line-height: 1.9;
+            color: #4b5563;
+            white-space: pre-line;
+        }
+        .sub {
+            margin-top: 26px;
+            padding-top: 24px;
+            border-top: 1px solid #e5e7eb;
+            font-size: 14px;
+            color: #9ca3af;
+        }
+    </style>
 </head>
-
 <body>
-
-<!-- 🔴 銀行標頭 -->
-<div class="header-bar">
-    <div class="header-inner">
-
-        <!-- 有上傳 logo 才會顯示 -->
-        <img src="{{ url_for('static', filename='logo.png') }}" class="logo"
-             onerror="this.style.display='none'">
-
-        <div class="bank-title">
-            花蓮信用合作社
+    <div class="topbar">花蓮信用合作社</div>
+    <div class="wrap">
+        <div class="card">
+            <div class="icon {{ icon_class }}">{{ icon }}</div>
+            <h1>{{ heading }}</h1>
+            <div class="msg">{{ message }}</div>
+            <div class="sub">The First Credit Cooperative Of Hualien</div>
         </div>
     </div>
-</div>
-
-<div class="wrap">
-    <div class="card">
-
-        <div class="icon {{ theme }}">
-            {% if theme == 'success' %}✔{% elif theme == 'error' %}✖{% else %}ℹ{% endif %}
-        </div>
-
-        <div class="title">{{ title }}</div>
-        <div class="message">{{ message }}</div>
-
-        {% if note %}
-        <div class="note">{{ note }}</div>
-        {% endif %}
-
-        <div class="divider"></div>
-
-        <div class="footer">
-            The First Credit Cooperative Of Hualien
-        </div>
-
-    </div>
-</div>
-
 </body>
 </html>
 """
 
 
-def render_page(title, message, theme="info", note="", code=200):
+def render_confirm_page(title: str, heading: str, message: str, icon: str, icon_class: str):
     return render_template_string(
-        PAGE_TEMPLATE,
+        CONFIRM_PAGE_HTML,
         title=title,
+        heading=heading,
         message=message,
-        theme=theme,
-        note=note
-    ), code
-
-
-# =========================
-# Routes
-# =========================
-@app.route("/")
-def index():
-    return render_page("系統正常", "Mail 驗證服務運作中", "info")
+        icon=icon,
+        icon_class=icon_class
+    )
 
 
 @app.route("/confirm")
@@ -219,13 +104,13 @@ def confirm():
     token = request.args.get("token", "").strip()
 
     if not token:
-        return render_page(
-            "驗證失敗",
-            "缺少驗證參數",
-            "error",
-            "請確認您是否使用完整連結",
-            400
-        )
+        return render_confirm_page(
+            title="驗證失敗",
+            heading="缺少驗證碼",
+            message="連結格式不正確，未提供 token。",
+            icon="✕",
+            icon_class="error"
+        ), 400
 
     conn = None
     cur = None
@@ -234,161 +119,117 @@ def confirm():
         conn = get_conn()
         cur = conn.cursor()
 
+        # 只抓最新一筆，這是固定 token 設計的關鍵
         cur.execute("""
-            SELECT status, created_time
+            SELECT id, token, created_time, confirm_time, status
             FROM confirm_tokens
             WHERE token = %s
+            ORDER BY created_time DESC
+            LIMIT 1
         """, (token,))
         row = cur.fetchone()
 
         if not row:
-            return render_page(
-                "連結已失效",
-                "此連結已失效或已更新",
-                "error",
-                "請使用最新驗證信件",
-                400
-            )
+            return render_confirm_page(
+                title="驗證失敗",
+                heading="查無此連結",
+                message="找不到此驗證連結，請重新申請驗證信。",
+                icon="✕",
+                icon_class="error"
+            ), 404
 
-        status, created_time = row
+        row_id, db_token, created_time, confirm_time, status = row
 
-        if status == "CONFIRMED":
-            return render_page(
-                "已完成確認",
-                "此連結已使用過",
-                "info",
-                "無需重複操作"
-            )
+        # 轉成台北時間顯示
+        now_tw = datetime.now(TW_TZ)
 
-        cur.execute("""
-            SELECT NOW() > (%s + INTERVAL '24 hours')
-        """, (created_time,))
-        expired = cur.fetchone()[0]
+        if created_time is not None:
+            if created_time.tzinfo is None:
+                created_time_tw = created_time.replace(tzinfo=TW_TZ)
+            else:
+                created_time_tw = created_time.astimezone(TW_TZ)
+        else:
+            created_time_tw = None
 
-        if expired:
-            return render_page(
-                "連結已過期",
-                "此驗證連結已過期",
-                "error",
-                "請重新申請驗證",
-                400
-            )
+        if confirm_time is not None:
+            if confirm_time.tzinfo is None:
+                confirm_time_tw = confirm_time.replace(tzinfo=TW_TZ)
+            else:
+                confirm_time_tw = confirm_time.astimezone(TW_TZ)
+        else:
+            confirm_time_tw = None
 
+        # 已確認過
+        if status == "Y":
+            msg = "此電子郵件信箱已完成驗證。"
+            if confirm_time_tw:
+                msg += f"\\n確認時間：{confirm_time_tw.strftime('%Y-%m-%d %H:%M:%S')}"
+            return render_confirm_page(
+                title="已完成驗證",
+                heading="信箱已確認",
+                message=msg,
+                icon="✓",
+                icon_class="success"
+            ), 200
+
+        # 檢查是否過期：created_time + 24hr
+        if created_time_tw is None:
+            return render_confirm_page(
+                title="驗證失敗",
+                heading="資料異常",
+                message="此驗證資料缺少建立時間，請重新申請驗證信。",
+                icon="✕",
+                icon_class="error"
+            ), 400
+
+        expire_time_tw = created_time_tw + timedelta(hours=24)
+
+        if now_tw > expire_time_tw:
+            return render_confirm_page(
+                title="連結已失效",
+                heading="連結已失效",
+                message=(
+                    "此連結已超過 24 小時有效期限。\\n"
+                    "請使用最新的驗證信重新確認。"
+                ),
+                icon="✕",
+                icon_class="error"
+            ), 400
+
+        # 更新為已確認
         cur.execute("""
             UPDATE confirm_tokens
-            SET status = 'CONFIRMED',
-                confirm_time = NOW()
-            WHERE token = %s
-        """, (token,))
-
+            SET status = 'Y',
+                confirm_time = %s
+            WHERE id = %s
+        """, (now_tw, row_id))
         conn.commit()
 
-        return render_page(
-            "驗證成功",
-            "您已完成電子郵件確認",
-            "success",
-            "系統已記錄您的驗證結果"
-        )
+        return render_confirm_page(
+            title="驗證成功",
+            heading="電子郵件驗證成功",
+            message=(
+                "您的電子郵件信箱已完成確認。\\n"
+                f"確認時間：{now_tw.strftime('%Y-%m-%d %H:%M:%S')}"
+            ),
+            icon="✓",
+            icon_class="success"
+        ), 200
 
     except Exception as e:
         if conn:
             conn.rollback()
 
-        return render_page(
-            "系統錯誤",
-            "處理過程發生錯誤",
-            "error",
-            str(e),
-            500
-        )
+        return render_confirm_page(
+            title="系統錯誤",
+            heading="系統處理失敗",
+            message=f"系統發生錯誤：{str(e)}",
+            icon="✕",
+            icon_class="error"
+        ), 500
 
     finally:
         if cur:
             cur.close()
         if conn:
             conn.close()
-
-
-# =========================
-# API
-# =========================
-@app.route("/api/upload_tokens", methods=["POST"])
-def upload_tokens():
-    data = request.json or {}
-    tokens = data.get("tokens", [])
-
-    if not tokens:
-        return jsonify({"error": "no tokens"}), 400
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    try:
-        cur.execute("DELETE FROM confirm_tokens")
-
-        for t in tokens:
-            cur.execute("""
-                INSERT INTO confirm_tokens (token, status, created_time)
-                VALUES (%s, 'PENDING', NOW())
-            """, (t,))
-
-        conn.commit()
-
-        return jsonify({"message": "ok", "count": len(tokens)})
-
-    finally:
-        cur.close()
-        conn.close()
-
-
-@app.route("/api/new_tokens")
-def new_tokens():
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    cur.execute("""
-        SELECT token, confirm_time
-        FROM confirm_tokens
-        WHERE status='CONFIRMED'
-          AND processed = FALSE
-        ORDER BY confirm_time
-    """)
-
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    return jsonify(rows)
-
-
-@app.route("/api/mark_processed", methods=["POST"])
-def mark_processed():
-    data = request.json or {}
-    tokens = data.get("tokens", [])
-
-    if not tokens:
-        return jsonify({"error": "no tokens"}), 400
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        UPDATE confirm_tokens
-        SET processed = TRUE
-        WHERE token = ANY(%s)
-    """, (tokens,))
-
-    conn.commit()
-
-    cur.close()
-    conn.close()
-
-    return jsonify({"updated": len(tokens)})
-
-
-# =========================
-init_db()
-
-if __name__ == "__main__":
-    app.run()
