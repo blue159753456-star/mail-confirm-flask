@@ -1,8 +1,18 @@
-from flask import request, render_template_string
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import psycopg2
+from flask import Flask, jsonify, render_template_string, request
+
+
+app = Flask(__name__)
+
 TW_TZ = ZoneInfo("Asia/Taipei")
+
+# Render 環境變數
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+API_KEY = os.environ.get("API_KEY", "hua215_secret_key").strip()
 
 
 CONFIRM_PAGE_HTML = """
@@ -88,6 +98,12 @@ CONFIRM_PAGE_HTML = """
 """
 
 
+def get_conn():
+    if not DATABASE_URL:
+        raise RuntimeError("未設定 DATABASE_URL 環境變數")
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
+
+
 def render_confirm_page(title: str, heading: str, message: str, icon: str, icon_class: str):
     return render_template_string(
         CONFIRM_PAGE_HTML,
@@ -97,6 +113,100 @@ def render_confirm_page(title: str, heading: str, message: str, icon: str, icon_
         icon=icon,
         icon_class=icon_class
     )
+
+
+def parse_created_time(value: str):
+    """
+    接收本機 send_with_token.py 傳來的 created_time
+    格式預期：YYYY-MM-DD HH:MM:SS
+    """
+    if not value:
+        return None
+
+    value = value.strip()
+
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        return dt
+    except Exception:
+        return None
+
+
+@app.route("/")
+def home():
+    return "mail-confirm-flask is running", 200
+
+
+@app.route("/api/register_token", methods=["POST"])
+def register_token():
+    data = request.get_json(silent=True)
+
+    if not data:
+        return jsonify({"ok": False, "msg": "no data"}), 400
+
+    api_key = str(data.get("api_key", "")).strip()
+    token = str(data.get("token", "")).strip()
+    created_time_str = str(data.get("created_time", "")).strip()
+
+    if api_key != API_KEY:
+        return jsonify({"ok": False, "msg": "invalid api key"}), 403
+
+    if not token:
+        return jsonify({"ok": False, "msg": "missing token"}), 400
+
+    if not created_time_str:
+        return jsonify({"ok": False, "msg": "missing created_time"}), 400
+
+    created_time = parse_created_time(created_time_str)
+    if created_time is None:
+        return jsonify({"ok": False, "msg": "invalid created_time format"}), 400
+
+    conn = None
+    cur = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # 查同 token 是否已存在
+        cur.execute("""
+            SELECT id
+            FROM confirm_tokens
+            WHERE token = %s
+            ORDER BY created_time DESC
+            LIMIT 1
+        """, (token,))
+        row = cur.fetchone()
+
+        if row:
+            # 已存在：刷新建立時間、清空確認時間、改回未確認
+            cur.execute("""
+                UPDATE confirm_tokens
+                SET created_time = %s,
+                    confirm_time = NULL,
+                    status = ''
+                WHERE id = %s
+            """, (created_time, row[0]))
+        else:
+            # 不存在：新增
+            cur.execute("""
+                INSERT INTO confirm_tokens (token, created_time, confirm_time, status)
+                VALUES (%s, %s, NULL, '')
+            """, (token, created_time))
+
+        conn.commit()
+        return jsonify({"ok": True, "msg": "token registered"}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 
 @app.route("/confirm")
@@ -140,7 +250,6 @@ def confirm():
 
         row_id, db_token, created_time, confirm_time, status = row
 
-        # 轉成台北時間顯示
         now_tw = datetime.now(TW_TZ)
 
         if created_time is not None:
@@ -163,7 +272,7 @@ def confirm():
         if status == "Y":
             msg = "此電子郵件信箱已完成驗證。"
             if confirm_time_tw:
-                msg += f"\\n確認時間：{confirm_time_tw.strftime('%Y-%m-%d %H:%M:%S')}"
+                msg += f"\n確認時間：{confirm_time_tw.strftime('%Y-%m-%d %H:%M:%S')}"
             return render_confirm_page(
                 title="已完成驗證",
                 heading="信箱已確認",
@@ -172,7 +281,7 @@ def confirm():
                 icon_class="success"
             ), 200
 
-        # 檢查是否過期：created_time + 24hr
+        # 缺少建立時間
         if created_time_tw is None:
             return render_confirm_page(
                 title="驗證失敗",
@@ -182,6 +291,7 @@ def confirm():
                 icon_class="error"
             ), 400
 
+        # 檢查是否過期：created_time + 24hr
         expire_time_tw = created_time_tw + timedelta(hours=24)
 
         if now_tw > expire_time_tw:
@@ -189,7 +299,7 @@ def confirm():
                 title="連結已失效",
                 heading="連結已失效",
                 message=(
-                    "此連結已超過 24 小時有效期限。\\n"
+                    "此連結已超過 24 小時有效期限。\n"
                     "請使用最新的驗證信重新確認。"
                 ),
                 icon="✕",
@@ -209,7 +319,7 @@ def confirm():
             title="驗證成功",
             heading="電子郵件驗證成功",
             message=(
-                "您的電子郵件信箱已完成確認。\\n"
+                "您的電子郵件信箱已完成確認。\n"
                 f"確認時間：{now_tw.strftime('%Y-%m-%d %H:%M:%S')}"
             ),
             icon="✓",
@@ -218,7 +328,7 @@ def confirm():
 
     except Exception as e:
         if conn:
-            conn.rollback()
+            conn.rollback()https://github.com/blue159753456-star/mail-confirm-flask/blob/main/app.py
 
         return render_confirm_page(
             title="系統錯誤",
@@ -233,3 +343,7 @@ def confirm():
             cur.close()
         if conn:
             conn.close()
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
