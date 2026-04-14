@@ -170,10 +170,9 @@ def register_token():
 
         # 查同 token 是否已存在
         cur.execute("""
-            SELECT id
+            SELECT token
             FROM confirm_tokens
             WHERE token = %s
-            ORDER BY created_time DESC
             LIMIT 1
         """, (token,))
         row = cur.fetchone()
@@ -185,8 +184,8 @@ def register_token():
                 SET created_time = %s,
                     confirm_time = NULL,
                     status = ''
-                WHERE id = %s
-            """, (created_time, row[0]))
+                WHERE token = %s
+            """, (created_time, token))
         else:
             # 不存在：新增
             cur.execute("""
@@ -200,6 +199,49 @@ def register_token():
     except Exception as e:
         if conn:
             conn.rollback()
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
+
+@app.route("/api/list_tokens", methods=["GET"])
+def list_tokens():
+    api_key = request.args.get("api_key", "").strip()
+
+    if api_key != API_KEY:
+        return jsonify({"ok": False, "msg": "invalid api key"}), 403
+
+    conn = None
+    cur = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT token, created_time, confirm_time, status
+            FROM confirm_tokens
+            ORDER BY created_time DESC
+            LIMIT 50
+        """)
+        rows = cur.fetchall()
+
+        result = []
+        for token, created_time, confirm_time, status in rows:
+            result.append({
+                "token": token,
+                "created_time": str(created_time) if created_time is not None else None,
+                "confirm_time": str(confirm_time) if confirm_time is not None else None,
+                "status": status
+            })
+
+        return jsonify({"ok": True, "data": result}), 200
+
+    except Exception as e:
         return jsonify({"ok": False, "msg": str(e)}), 500
 
     finally:
@@ -229,9 +271,8 @@ def confirm():
         conn = get_conn()
         cur = conn.cursor()
 
-        # 只抓最新一筆，這是固定 token 設計的關鍵
         cur.execute("""
-            SELECT id, token, created_time, confirm_time, status
+            SELECT token, created_time, confirm_time, status
             FROM confirm_tokens
             WHERE token = %s
             ORDER BY created_time DESC
@@ -248,7 +289,7 @@ def confirm():
                 icon_class="error"
             ), 404
 
-        row_id, db_token, created_time, confirm_time, status = row
+        db_token, created_time, confirm_time, status = row
 
         now_tw = datetime.now(TW_TZ)
 
@@ -311,8 +352,8 @@ def confirm():
             UPDATE confirm_tokens
             SET status = 'Y',
                 confirm_time = %s
-            WHERE id = %s
-        """, (now_tw, row_id))
+            WHERE token = %s
+        """, (now_tw, token))
         conn.commit()
 
         return render_confirm_page(
