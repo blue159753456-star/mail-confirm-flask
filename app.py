@@ -328,7 +328,7 @@ def confirm():
 
     except Exception as e:
         if conn:
-            conn.rollback()https://github.com/blue159753456-star/mail-confirm-flask/blob/main/app.py
+            conn.rollback()
 
         return render_confirm_page(
             title="系統錯誤",
